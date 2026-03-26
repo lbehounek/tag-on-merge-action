@@ -1,0 +1,134 @@
+name: 'Tag on Merge'
+description: 'Automatically bump semver tag on PR merge. Replaces anothrNick/github-tag-action.'
+
+inputs:
+  tag-prefix:
+    description: 'Tag prefix (e.g., "v" produces v1.2.3)'
+    required: false
+    default: 'v'
+  default-bump:
+    description: 'Default bump level when no #major/#minor/#patch in PR title'
+    required: false
+    default: 'patch'
+  release-branches:
+    description: 'Comma-separated list of branches to tag'
+    required: false
+    default: 'main'
+  initial-version:
+    description: 'Starting version if no tags exist yet'
+    required: false
+    default: '0.1.0'
+  github-token:
+    description: 'GitHub token for pushing tags'
+    required: true
+
+outputs:
+  new-tag:
+    description: 'The new tag that was created'
+    value: ${{ steps.tag.outputs.new_tag }}
+  previous-tag:
+    description: 'The previous tag'
+    value: ${{ steps.tag.outputs.previous_tag }}
+  bump:
+    description: 'The bump level that was applied'
+    value: ${{ steps.tag.outputs.bump }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Bump and tag
+      id: tag
+      shell: bash
+      env:
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        DEFAULT_BUMP: ${{ inputs.default-bump }}
+        RELEASE_BRANCHES: ${{ inputs.release-branches }}
+        INITIAL_VERSION: ${{ inputs.initial-version }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+
+        # Check if current branch is a release branch
+        current_branch="${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}"
+        # For PR events, use the base branch
+        if [ -n "${GITHUB_BASE_REF:-}" ]; then
+          current_branch="$GITHUB_BASE_REF"
+        fi
+
+        IFS=',' read -ra branches <<< "$RELEASE_BRANCHES"
+        is_release=false
+        for branch in "${branches[@]}"; do
+          branch=$(echo "$branch" | xargs)  # trim whitespace
+          if [ "$current_branch" = "$branch" ]; then
+            is_release=true
+            break
+          fi
+        done
+
+        if [ "$is_release" != "true" ]; then
+          echo "::notice::Branch '$current_branch' is not a release branch ($RELEASE_BRANCHES). Skipping."
+          exit 0
+        fi
+
+        # Determine bump from PR title
+        pr_title="${{ github.event.pull_request.title }}"
+        bump="$DEFAULT_BUMP"
+
+        if echo "$pr_title" | grep -qi '#none'; then
+          echo "::notice::PR title contains #none. Skipping tag."
+          exit 0
+        elif echo "$pr_title" | grep -qi '#major'; then
+          bump="major"
+        elif echo "$pr_title" | grep -qi '#minor'; then
+          bump="minor"
+        elif echo "$pr_title" | grep -qi '#patch'; then
+          bump="patch"
+        fi
+
+        # Find latest tag matching prefix
+        latest_tag=$(git tag --list "${TAG_PREFIX}*" --sort=-v:refname | head -n 1)
+
+        if [ -z "$latest_tag" ]; then
+          new_version="$INITIAL_VERSION"
+          echo "::notice::No existing tags found. Using initial version: $new_version"
+        else
+          # Strip prefix to get version
+          version="${latest_tag#"$TAG_PREFIX"}"
+
+          # Parse semver
+          IFS='.' read -r major minor patch <<< "$version"
+          major=${major:-0}
+          minor=${minor:-0}
+          patch=${patch:-0}
+
+          case "$bump" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+          esac
+
+          new_version="${major}.${minor}.${patch}"
+        fi
+
+        new_tag="${TAG_PREFIX}${new_version}"
+
+        echo "previous_tag=${latest_tag:-none}" >> "$GITHUB_OUTPUT"
+        echo "new_tag=${new_tag}" >> "$GITHUB_OUTPUT"
+        echo "bump=${bump}" >> "$GITHUB_OUTPUT"
+
+        # Create and push tag
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag "$new_tag"
+        git push origin "$new_tag"
+
+        echo "::notice::Tagged ${new_tag} (${bump} bump from ${latest_tag:-none})"
