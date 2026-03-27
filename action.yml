@@ -85,50 +85,66 @@ runs:
           bump="patch"
         fi
 
-        # Find latest tag matching prefix
-        latest_tag=$(git tag --list "${TAG_PREFIX}*" --sort=-v:refname | head -n 1)
-
-        if [ -z "$latest_tag" ]; then
-          new_version="$INITIAL_VERSION"
-          echo "::notice::No existing tags found. Using initial version: $new_version"
-        else
-          # Strip prefix to get version
-          version="${latest_tag#"$TAG_PREFIX"}"
-
-          # Parse semver
-          IFS='.' read -r major minor patch <<< "$version"
-          major=${major:-0}
-          minor=${minor:-0}
-          patch=${patch:-0}
-
-          case "$bump" in
-            major)
-              major=$((major + 1))
-              minor=0
-              patch=0
-              ;;
-            minor)
-              minor=$((minor + 1))
-              patch=0
-              ;;
-            patch)
-              patch=$((patch + 1))
-              ;;
-          esac
-
-          new_version="${major}.${minor}.${patch}"
-        fi
-
-        new_tag="${TAG_PREFIX}${new_version}"
-
-        echo "previous_tag=${latest_tag:-none}" >> "$GITHUB_OUTPUT"
-        echo "new_tag=${new_tag}" >> "$GITHUB_OUTPUT"
-        echo "bump=${bump}" >> "$GITHUB_OUTPUT"
-
-        # Create and push tag
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-        git tag "$new_tag"
-        git push origin "$new_tag"
 
-        echo "::notice::Tagged ${new_tag} (${bump} bump from ${latest_tag:-none})"
+        # Retry loop handles races when multiple PRs merge simultaneously.
+        # Each iteration fetches the latest remote tags to get the true latest version.
+        max_attempts=5
+        for attempt in $(seq 1 $max_attempts); do
+          # Fetch remote tags to see tags created by concurrent runs
+          git fetch --tags --force origin
+
+          # Find latest tag matching prefix
+          latest_tag=$(git tag --list "${TAG_PREFIX}*" --sort=-v:refname | head -n 1)
+
+          if [ -z "$latest_tag" ]; then
+            new_version="$INITIAL_VERSION"
+            echo "::notice::No existing tags found. Using initial version: $new_version"
+          else
+            # Strip prefix to get version
+            version="${latest_tag#"$TAG_PREFIX"}"
+
+            # Parse semver
+            IFS='.' read -r major minor patch <<< "$version"
+            major=${major:-0}
+            minor=${minor:-0}
+            patch=${patch:-0}
+
+            case "$bump" in
+              major)
+                major=$((major + 1))
+                minor=0
+                patch=0
+                ;;
+              minor)
+                minor=$((minor + 1))
+                patch=0
+                ;;
+              patch)
+                patch=$((patch + 1))
+                ;;
+            esac
+
+            new_version="${major}.${minor}.${patch}"
+          fi
+
+          new_tag="${TAG_PREFIX}${new_version}"
+
+          # Try to create and push the tag
+          if git tag "$new_tag" 2>/dev/null && git push origin "$new_tag" 2>/dev/null; then
+            echo "previous_tag=${latest_tag:-none}" >> "$GITHUB_OUTPUT"
+            echo "new_tag=${new_tag}" >> "$GITHUB_OUTPUT"
+            echo "bump=${bump}" >> "$GITHUB_OUTPUT"
+            echo "::notice::Tagged ${new_tag} (${bump} bump from ${latest_tag:-none})"
+            exit 0
+          fi
+
+          # Tag already exists (race condition) — clean up local tag and retry
+          git tag -d "$new_tag" 2>/dev/null || true
+          echo "::warning::Tag ${new_tag} already exists (attempt ${attempt}/${max_attempts}). Retrying..."
+          sleep 1
+        done
+
+        echo "::error::Failed to create tag after ${max_attempts} attempts"
+        exit 1
