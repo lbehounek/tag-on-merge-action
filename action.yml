@@ -45,6 +45,10 @@ runs:
         RELEASE_BRANCHES: ${{ inputs.release-branches }}
         INITIAL_VERSION: ${{ inputs.initial-version }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
+        # Pass the attacker-controllable PR title through env, never inline ${{ }}
+        # into the script — a title with quotes/backticks/$() would otherwise break
+        # the shell or execute arbitrary commands (CWE-94). Referenced as "$PR_TITLE".
+        PR_TITLE: ${{ github.event.pull_request.title }}
       run: |
         set -euo pipefail
 
@@ -70,8 +74,8 @@ runs:
           exit 0
         fi
 
-        # Determine bump from PR title
-        pr_title="${{ github.event.pull_request.title }}"
+        # Determine bump from PR title (read from env, never interpolated inline)
+        pr_title="${PR_TITLE:-}"
         bump="$DEFAULT_BUMP"
 
         if echo "$pr_title" | grep -qi '#none'; then
