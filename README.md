@@ -34,7 +34,7 @@ jobs:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `github-token` | (required) | Token for pushing tags |
+| `github-token` | (required) | Token used to authenticate tag fetch/push (via a scoped auth header) |
 | `tag-prefix` | `v` | Tag prefix (e.g., `v` → `v1.2.3`) |
 | `default-bump` | `patch` | Default bump when no hint in PR title |
 | `release-branches` | `main` | Comma-separated branches to tag |
@@ -55,3 +55,19 @@ Override the default bump by including in PR title:
 | `new-tag` | The tag that was created |
 | `previous-tag` | The previous tag |
 | `bump` | The bump level applied |
+
+## Security
+
+- **Grant minimal permissions.** Only `contents: write` is required to push tags
+  (as in the usage example). Don't grant more.
+- **Untrusted PR titles are handled safely.** The PR title is passed via the step
+  `env:` block and read as a quoted shell variable — never interpolated inline
+  into the script — so a title containing quotes, backticks, or `$( )` cannot
+  inject commands (CWE-94).
+- **Prefer `pull_request` over `pull_request_target`.** This action reads the
+  attacker-controllable PR title; `pull_request_target` hands a write token to
+  fork-triggered runs. The `pull_request` / `types: [closed]` trigger shown above
+  is the safe pattern.
+- **Token auth.** `github-token` authenticates fetch/push via a scoped auth
+  header, so tagging works even if your `actions/checkout` used
+  `persist-credentials: false`.
