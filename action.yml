@@ -62,7 +62,9 @@ runs:
         IFS=',' read -ra branches <<< "$RELEASE_BRANCHES"
         is_release=false
         for branch in "${branches[@]}"; do
-          branch=$(echo "$branch" | xargs)  # trim whitespace
+          # Trim surrounding whitespace. sed (not xargs) — xargs interprets
+          # quotes/backslashes, which could mangle exotic branch names.
+          branch=$(echo "$branch" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
           if [ "$current_branch" = "$branch" ]; then
             is_release=true
             break
@@ -91,6 +93,19 @@ runs:
 
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        # Authenticate git with the provided token so tag fetch/push work even
+        # when the caller's checkout used persist-credentials: false. This is what
+        # the (required) github-token input is for — previously it was declared
+        # but never used, so pushes silently depended on ambient checkout creds.
+        # A scoped auth header is used (not a tokenized remote URL) so the token
+        # never lands in a remote URL or log line. GITHUB_SERVER_URL keeps this
+        # working on GitHub Enterprise Server too.
+        if [ -n "${GITHUB_TOKEN:-}" ]; then
+          server_host=$(echo "${GITHUB_SERVER_URL:-https://github.com}" | sed -E 's#^https?://##')
+          auth_b64=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          git config "http.https://${server_host}/.extraheader" "AUTHORIZATION: basic ${auth_b64}"
+        fi
 
         # Retry loop handles races when multiple PRs merge simultaneously.
         # Each iteration fetches the latest remote tags to get the true latest version.
