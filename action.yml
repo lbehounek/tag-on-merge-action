@@ -110,7 +110,20 @@ runs:
         # A scoped auth header is used (not a tokenized remote URL) so the token
         # never lands in a remote URL or log line. GITHUB_SERVER_URL keeps this
         # working on GitHub Enterprise Server too.
-        if [ -n "${GITHUB_TOKEN:-}" ]; then
+        # ONLY if the checkout step didn't already provide credentials.
+        # `http.<host>.extraheader` is MULTI-VALUED, and actions/checkout
+        # persists its own (v5+ through an includeIf-included config file), so
+        # unconditionally adding ours makes git send TWO `AUTHORIZATION`
+        # headers — which GitHub rejects with HTTP 400, surfacing as
+        # `fatal: unable to access ...: The requested URL returned error: 400`
+        # and exit 128. Verified locally: with both present,
+        # `git config --get-all http.https://github.com/.extraheader` returns
+        # two values. `git config --get-regexp` honours includes, so it sees
+        # checkout's credential; when there is none (a standalone checkout with
+        # persist-credentials: false) we still install ours, which is the whole
+        # point of the github-token input.
+        if [ -n "${GITHUB_TOKEN:-}" ] \
+           && ! git config --get-regexp '^http\..*\.extraheader$' >/dev/null 2>&1; then
           server_host=$(echo "${GITHUB_SERVER_URL:-https://github.com}" | sed -E 's#^https?://##')
           auth_b64=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
           git config "http.https://${server_host}/.extraheader" "AUTHORIZATION: basic ${auth_b64}"
