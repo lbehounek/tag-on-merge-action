@@ -80,16 +80,25 @@ runs:
         pr_title="${PR_TITLE:-}"
         bump="$DEFAULT_BUMP"
 
-        if echo "$pr_title" | grep -qi '#none'; then
+        # Native bash matching, NOT `echo "$pr_title" | grep -qi`. That idiom is
+        # actively dangerous under `set -o pipefail`: `grep -q` exits the moment
+        # it matches, so `echo` can take SIGPIPE (141) — and pipefail makes 141
+        # the pipeline's status, so the condition reads FALSE precisely when the
+        # marker WAS present. `set -e` doesn't fire (it's an `if` condition), so
+        # the failure is silent: a `#minor` PR would quietly ship as a patch.
+        # No pipe, no subprocess, nothing to signal. nocasematch keeps `grep -i`.
+        shopt -s nocasematch
+        if [[ "$pr_title" == *"#none"* ]]; then
           echo "::notice::PR title contains #none. Skipping tag."
           exit 0
-        elif echo "$pr_title" | grep -qi '#major'; then
+        elif [[ "$pr_title" == *"#major"* ]]; then
           bump="major"
-        elif echo "$pr_title" | grep -qi '#minor'; then
+        elif [[ "$pr_title" == *"#minor"* ]]; then
           bump="minor"
-        elif echo "$pr_title" | grep -qi '#patch'; then
+        elif [[ "$pr_title" == *"#patch"* ]]; then
           bump="patch"
         fi
+        shopt -u nocasematch
 
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -114,8 +123,18 @@ runs:
           # Fetch remote tags to see tags created by concurrent runs
           git fetch --tags --force origin
 
-          # Find latest tag matching prefix
-          latest_tag=$(git tag --list "${TAG_PREFIX}*" --sort=-v:refname | head -n 1)
+          # Find the latest tag matching the prefix.
+          #
+          # `for-each-ref --count=1`, NOT `git tag --list ... | head -n 1`. With
+          # hundreds of tags, `head` closes the pipe after line 1 while git is
+          # still writing, git takes SIGPIPE (141), pipefail promotes it to the
+          # pipeline status and `set -e` kills the step — producing NO output at
+          # all, because it happens inside a command substitution. That is what
+          # broke tagging on AirQ-Sports (508 tags): 3 of 4 merges on 2026-07-26
+          # went untagged, including a `#minor` whose bump was lost entirely.
+          # git selects the first match itself here, so there is no pipe to break.
+          latest_tag=$(git for-each-ref --sort=-v:refname --count=1 \
+                        --format='%(refname:short)' "refs/tags/${TAG_PREFIX}*")
 
           if [ -z "$latest_tag" ]; then
             new_version="$INITIAL_VERSION"

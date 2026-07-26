@@ -71,3 +71,25 @@ Override the default bump by including in PR title:
 - **Token auth.** `github-token` authenticates fetch/push via a scoped auth
   header, so tagging works even if your `actions/checkout` used
   `persist-credentials: false`.
+
+## Implementation notes
+
+Two bash footguns this action deliberately avoids. Both were live bugs (fixed
+2026-07-26) and both failed *silently*, so they are worth not reintroducing.
+
+**Never `cmd | head -n 1` under `set -o pipefail`.** `head` closes the pipe after
+the first line; with enough output upstream (a repo with hundreds of tags) the
+producer takes SIGPIPE and exits 141, `pipefail` promotes that to the pipeline's
+status, and `set -e` kills the step. Inside a command substitution it prints
+nothing at all, so the log shows only `exit code 141`. Use
+`git for-each-ref --count=1` — git selects the first match itself, no pipe.
+
+**Never `echo "$x" | grep -q` under `set -o pipefail`.** Same SIGPIPE, worse
+outcome: `grep -q` exits *the moment it matches*, so the race is most likely
+exactly when the pattern IS present. The pipeline returns 141, the `if` reads
+false, and `set -e` doesn't fire because it's a condition — so a `#minor` PR
+silently ships as a patch. Use bash `[[ "$x" == *"pat"* ]]`.
+
+Related (already fixed in v1): the PR title is passed via `env: PR_TITLE`, never
+interpolated into the script body — `${{ }}` is textual substitution done before
+bash parses the line, so a crafted title would inject shell (CWE-94).
