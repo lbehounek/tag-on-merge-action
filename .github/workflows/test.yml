@@ -1,0 +1,34 @@
+name: test
+
+# The action is pure bash, so the suite is too — no toolchain to set up, and
+# nothing to install. It runs on every push and PR, and on the default branch
+# after merge, because a broken tagger fails silently: it does not block
+# anything visible, it just quietly stops cutting releases.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Pinned by SHA, like the consumer workflows this action ships with —
+      # a moving tag would undo the supply-chain guarantee the pin exists for.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run tests
+        # test.sh builds throwaway repos with a local bare "origin" and runs the
+        # real script extracted from action.yml, so git tag/fetch/push all
+        # genuinely execute. Each fixture sets its own local git identity, so
+        # the global one below is only insurance for a runner image that ships
+        # without any — cheap, and it keeps a failure here about the action
+        # rather than about the runner.
+        run: |
+          git config --global user.email "test@example.com"
+          git config --global user.name "CI"
+          bash test.sh
